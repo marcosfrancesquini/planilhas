@@ -17,18 +17,21 @@ Critérios (na ordem e sentido de ordenação):
   3) Frequência no Último Bloco Incompleto (desc)
   4) Maximo de vezes (desc)
   5) Minimo de vezes (asc)
-  6) máximo grande (desc)   *zeros viram vazio para exibição*
-  7) mínimo pequeno (asc)   *zeros viram vazio para exibição*
+  6) máximo grande (desc)
+  7) mínimo pequeno (asc)
 
 Uso:
-  python ordenar_planilhas_colunas_lado.py --input caminho/arquivo.xlsx --output caminho/saida.xlsx
+  python ordenar_planilhas_colunas_lado.py --input caminho/arquivo.xlsx --output caminho/saida.xlsx [--sheet "Planilha Única"] [--zero-como-vazio]
+    --zero-como-vazio  -> opcional; se presente, mostra vazio (em vez de 0) nas colunas "máximo grande" e "mínimo pequeno".
 
 Dependências:
   pip install pandas openpyxl odfpy xlsxwriter
 """
 
 import argparse
-from typing import List, Tuple, Any, Dict
+import re
+import unicodedata
+from typing import List, Tuple, Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -105,6 +108,50 @@ def _coerce_numeric_col(series: pd.Series) -> pd.Series:
         return series
 
 
+def _norm_text(s: str) -> str:
+    """Remove acentos, pontuação e padroniza para comparação robusta."""
+    if not isinstance(s, str):
+        s = str(s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower().strip()
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)  # remove pontuação
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _build_col_resolver(df: pd.DataFrame) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for c in df.columns:
+        mapping[_norm_text(c)] = c
+    return mapping
+
+
+def _resolve_col(df: pd.DataFrame, canonical: str, resolver: Dict[str, str], extras: Optional[List[str]] = None) -> Optional[str]:
+    candidates = [canonical]
+    if extras:
+        candidates += extras
+    for cand in candidates:
+        key = _norm_text(cand)
+        if key in resolver:
+            return resolver[key]
+    key = _norm_text(canonical).replace("freq", "frequencia")
+    if key in resolver:
+        return resolver[key]
+    return None
+
+
+SYNONYMS: Dict[str, List[str]] = {
+    "Máxima Freq. nos Blocos Completos": ["Maxima Freq. nos Blocos Completos", "Maxima Freq nos Blocos Completos", "Máxima Freq nos Blocos Completos"],
+    "Mínima Freq. nos Blocos Completos": ["Minima Freq. nos Blocos Completos", "Minima Freq nos Blocos Completos", "Mínima Freq nos Blocos Completos"],
+    "Frequência no Último Bloco Incompleto": ["Frequencia no Ultimo Bloco Incompleto", "Frequencia no Último Bloco Incompleto"],
+    "Maximo de vezes": ["Máximo de vezes", "Maximo de Vezes"],
+    "Minimo de vezes": ["Mínimo de vezes", "Minimo de Vezes"],
+    "máximo grande": ["Maximo grande", "maximo grande"],
+    "mínimo pequeno": ["Minimo pequeno", "minimo pequeno"],
+}
+
+
 def _get_header_values(df: pd.DataFrame, sheet_name: str) -> List[str]:
     tam_bloco = _first_non_null(df, ["Tamanho do Bloco", "Tamanho do bloco", "Tamanho do bloco: 69"])
     tam_ultimo = _first_non_null(df, ["Tamanho do Último Bloco", "Tamanho do ultimo bloco", " Tamanho do ultimo bloco: 66"])
@@ -121,36 +168,29 @@ def _get_header_values(df: pd.DataFrame, sheet_name: str) -> List[str]:
     ]
 
 
-def _build_blocks_side_by_side(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
-    """
-    Para cada critério, gera um DataFrame de três colunas [<critério>, numero base, Número]
-    já ordenado. Ordena por uma CHAVE numérica derivada do critério, mas mantém o VALOR
-    ORIGINAL na coluna do critério (para não virar "0").
-
-    Tratamento especial: para as colunas "máximo grande" e "mínimo pequeno",
-    valores iguais a 0/0.0/"0"/"0,0" são tratados como vazios (NaN) para exibição.
-    """
+def _build_blocks_side_by_side(df: pd.DataFrame, zero_as_blank: bool) -> Dict[str, pd.DataFrame]:
     nb = _pick_numero_base(df)
     numcol = _pick_numero_col(df)
     blocks: Dict[str, pd.DataFrame] = {}
 
-    ZEROY = {"0", "0.0", "0,0"}
+    resolver = _build_col_resolver(df)
 
     for crit, asc in CRITERIOS:
-        if crit in df.columns:
-            orig = df[crit].copy()
+        real_col = _resolve_col(df, crit, resolver, SYNONYMS.get(crit))
+        if real_col is None:
+            ord_df = pd.DataFrame({crit: pd.Series(dtype=object), "numero base": pd.Series(dtype=object), "Número": pd.Series(dtype=object)})
+        else:
+            orig = df[real_col].copy()
 
-            if crit in ["máximo grande", "mínimo pequeno"]:
+            if zero_as_blank and crit in ["máximo grande", "mínimo pequeno"]:
                 if pd.api.types.is_numeric_dtype(orig):
                     orig = orig.mask(orig == 0, other=np.nan)
                 else:
-                    orig = orig.mask(orig.astype(str).str.strip().isin(ZEROY), other=np.nan)
+                    orig = orig.mask(orig.astype(str).str.strip().isin({"0", "0.0", "0,0"}), other=np.nan)
 
-            key = _coerce_numeric_col(df[crit])
+            key = _coerce_numeric_col(df[real_col])
             ord_df = pd.DataFrame({crit: orig, "numero base": nb, "Número": numcol, "__key__": key})
             ord_df = ord_df.sort_values(by="__key__", ascending=asc, kind="mergesort", na_position="last").drop(columns=["__key__"])
-        else:
-            ord_df = pd.DataFrame({crit: pd.Series(dtype=object), "numero base": pd.Series(dtype=object), "Número": pd.Series(dtype=object)})
 
         blocks[crit] = ord_df.reset_index(drop=True)
 
@@ -171,22 +211,13 @@ def _xlsx_value(v):
 
 
 def _write_section(worksheet, start_row: int, header_cells: List[str], blocks: Dict[str, pd.DataFrame]) -> int:
-    """
-    Escreve no worksheet:
-      - linha de header (5 células lado a lado)
-      - em seguida, linhas com 7 blocos de colunas [<critério>, numero base, Número], lado a lado
-    Retorna o número total de linhas consumidas (inclui a linha do header + cabeçalhos dos blocos + dados).
-    """
-    # 1) Cabeçalho-resumo (5 células)
     row = start_row
     for j, val in enumerate(header_cells):
         worksheet.write(row, j, _xlsx_value(val))
 
-    # 2) Preparar blocos
     max_len = max((len(df) for df in blocks.values()), default=0)
     row_blocks_header = row + 1
 
-    # 3) Escrever blocos lado a lado
     start_col = 0
     for idx, (crit, _) in enumerate(CRITERIOS):
         bdf = blocks[crit].copy()
@@ -196,7 +227,6 @@ def _write_section(worksheet, start_row: int, header_cells: List[str], blocks: D
                                 "Número": [np.nan]*(max_len - len(bdf))})
             bdf = pd.concat([bdf, pad], ignore_index=True)
 
-        # cabeçalhos das 3 colunas do bloco
         worksheet.write(row_blocks_header, start_col + 0, _xlsx_value(crit))
         worksheet.write(row_blocks_header, start_col + 1, _xlsx_value("numero base"))
         worksheet.write(row_blocks_header, start_col + 2, _xlsx_value("Número"))
@@ -215,10 +245,9 @@ def _write_section(worksheet, start_row: int, header_cells: List[str], blocks: D
     return total_consumed
 
 
-def process_file(input_path: str, output_path: str, sheet_name: str = "Planilha Única") -> None:
+def process_file(input_path: str, output_path: str, sheet_name: str = "Planilha Única", zero_as_blank: bool = False) -> None:
     xls = pd.ExcelFile(input_path)
     writer = pd.ExcelWriter(output_path, engine="xlsxwriter")
-    # cria aba única
     pd.DataFrame([]).to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
 
@@ -226,9 +255,9 @@ def process_file(input_path: str, output_path: str, sheet_name: str = "Planilha 
     for sname in xls.sheet_names:
         df = pd.read_excel(input_path, sheet_name=sname)
         header_cells = _get_header_values(df, sname)
-        blocks = _build_blocks_side_by_side(df)
+        blocks = _build_blocks_side_by_side(df, zero_as_blank=zero_as_blank)
         consumed = _write_section(worksheet, current_row, header_cells, blocks)
-        current_row += consumed + 2  # 2 linhas em branco entre planilhas
+        current_row += consumed + 2
 
     writer.close()
 
@@ -238,9 +267,10 @@ def main():
     parser.add_argument("--input", "-i", required=True, help="Caminho do arquivo XLSX/ODS de entrada")
     parser.add_argument("--output", "-o", required=True, help="Caminho do XLSX de saída")
     parser.add_argument("--sheet", "-s", default="Planilha Única", help="Nome da aba única de saída")
+    parser.add_argument("--zero-como-vazio", action="store_true", help="Se presente, mostra vazio em vez de 0 em 'máximo grande' e 'mínimo pequeno'.")
     args = parser.parse_args()
 
-    process_file(args.input, args.output, args.sheet)
+    process_file(args.input, args.output, args.sheet, args.zero_como_vazio)
     print(f"OK: gerado '{args.output}'")
 
 if __name__ == "__main__":
