@@ -1,0 +1,15 @@
+# preset meio-termo (meu favorito pro seu caso)
+python predict_with_model_v3.py --predict planilha_2190.xlsx --model model.pkl --topk 50 --preset balanced
+
+# se quiser puxar ainda mais pros altos:
+python predict_with_model_v3.py --predict planilha_2190.xlsx --model model.pkl --topk 50 --preset high
+
+# se quiser espalhar mais (aceitar mais baixos/médios):
+python predict_with_model_v3.py --predict planilha_2190.xlsx --model model.pkl --topk 50 --preset spread
+
+python predict_with_model_v3.py --predict planilha_2136.xlsx --model model.pkl --topk 50 --preset high --low-cap 5 --mid-cap 9 --high-min 28 --must10 1 --must20 2 --neighbor-penalty 0.50 --neighbor-radius 2
+
+python predict_with_model_v3.py --predict planilha_2188.xlsx --model model.pkl --topk 50 --preset high --low-cap 5 --mid-cap 9 --high-min 28 --must10 1 --must20 2 --neighbor-penalty 0.50 --neighbor-radius 2
+
+python predict_with_model_v3.py --predict planilha_2188.xlsx --model model.pkl --topk 60 --preset high --low-cap 7 --mid-cap 12 --high-min 30 --must10 1 --must20 2 --neighbor-penalty 0.30 --neighbor-radius 1
+60 numeros

@@ -1,0 +1,1 @@
+python ordenar.py -i primeiras_825.xlsx -o saiu.xlsx --recalc-excel --debug
